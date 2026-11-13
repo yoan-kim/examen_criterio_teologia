@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { Globe } from 'lucide-react';
+import { Globe, BookOpen, ArrowRight } from 'lucide-react';
 import {
   ChapterId,
   DOCUMENT_HEADER,
@@ -22,8 +22,10 @@ type ActiveTab = 'study' | 'quiz' | 'blind' | 'wrong';
 const STORAGE_KEY = 'scj_mission_center_regulation_master_v2';
 
 export default function App() {
+  const [showIntro, setShowIntro] = useState<boolean>(true);
   const [lang, setLang] = useState<Language>('ko');
   const [activeTab, setActiveTab] = useState<ActiveTab>('study');
+  const [quizSessionKey, setQuizSessionKey] = useState<number>(0);
   const [selectedChapter, setSelectedChapter] = useState<ChapterId | 'all'>('all');
   const [customQuestionPool, setCustomQuestionPool] = useState<number[] | null>(null);
   const [activeClauseId, setActiveClauseId] = useState<string | null>('1-1');
@@ -100,6 +102,19 @@ export default function App() {
     }
   }, [solvedQuestionIds, wrongQuestionIds, bookmarkedQuestionIds, masteredClauseIds]);
 
+  const handleEnterWithLanguage = (selectedLang: Language) => {
+    setLang(selectedLang);
+    setActiveTab('study');
+    setShowIntro(false);
+  };
+
+  const handleOpenQuizTab = () => {
+    setCustomQuestionPool(null);
+    setSelectedChapter('all');
+    setQuizSessionKey((prev) => prev + 1);
+    setActiveTab('quiz');
+  };
+
   const handleRecordResult = (questionId: number, isCorrect: boolean) => {
     if (isCorrect) {
       setSolvedQuestionIds((prev) =>
@@ -135,18 +150,97 @@ export default function App() {
   const isEs = lang === 'es';
   const docHeader = isEs ? DOCUMENT_HEADER_ES : DOCUMENT_HEADER;
 
+  // Initial Landing / Language Selection Gate
+  if (showIntro) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-[#F8FAFC] text-slate-900 p-4 sm:p-6">
+        <div className="w-full max-w-2xl bg-white border border-slate-200 rounded-2xl p-6 sm:p-10 shadow-sm space-y-8 text-center">
+          {/* Icon & Date Subtitle */}
+          <div className="space-y-3">
+            <div className="w-12 h-12 rounded-xl bg-sky-50 border border-sky-200 text-sky-700 flex items-center justify-center mx-auto">
+              <BookOpen className="w-6 h-6" />
+            </div>
+            <div className="text-xs font-medium text-slate-500">
+              {DOCUMENT_HEADER.effectiveDate} · {DOCUMENT_HEADER_ES.effectiveDate}
+            </div>
+          </div>
+
+          {/* Bilingual Main Titles */}
+          <div className="space-y-3">
+            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900 break-keep">
+              {DOCUMENT_HEADER.title}
+            </h1>
+            <p className="text-base sm:text-lg font-semibold text-slate-600 break-keep">
+              {DOCUMENT_HEADER_ES.title}
+            </p>
+          </div>
+
+          <div className="h-px bg-slate-200" />
+
+          {/* Language Selection Prompt & Buttons */}
+          <div className="space-y-4">
+            <p className="text-xs sm:text-sm text-slate-500">
+              학습 및 시험을 진행할 언어를 선택해 주세요 · Seleccione su idioma para comenzar
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <button
+                type="button"
+                onClick={() => handleEnterWithLanguage('ko')}
+                className="group p-5 sm:p-6 rounded-xl border border-slate-200 bg-slate-900 text-white hover:bg-slate-800 transition-all text-left flex flex-col justify-between gap-4 shadow-xs"
+              >
+                <div className="space-y-1">
+                  <div className="text-xs font-mono-num text-slate-300">
+                    KOREAN · 한국어
+                  </div>
+                  <div className="text-lg sm:text-xl font-bold">
+                    한국어로 시작하기
+                  </div>
+                </div>
+                <div className="flex items-center justify-between text-xs text-slate-300 pt-2 border-t border-slate-700/80">
+                  <span>원문 학습 및 실전 문제 풀이</span>
+                  <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleEnterWithLanguage('es')}
+                className="group p-5 sm:p-6 rounded-xl border border-sky-700 bg-sky-700 text-white hover:bg-sky-800 transition-all text-left flex flex-col justify-between gap-4 shadow-xs"
+              >
+                <div className="space-y-1">
+                  <div className="text-xs font-mono-num text-sky-200">
+                    SPANISH · ESPAÑOL
+                  </div>
+                  <div className="text-lg sm:text-xl font-bold">
+                    Comenzar en Español
+                  </div>
+                </div>
+                <div className="flex items-center justify-between text-xs text-sky-100 pt-2 border-t border-sky-600">
+                  <span>Estudio del texto y examen práctico</span>
+                  <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+                </div>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen flex flex-col bg-[#F8FAFC] text-slate-900">
       {/* 3-Zone Top Navigation Bar with Korean / Spanish Language Switcher */}
       <header className="flex items-center justify-between gap-3 sm:gap-8 px-4 sm:px-6 py-3.5 bg-white border-b border-slate-200 sticky top-0 z-20">
-        {/* Zone 1: Brand Title */}
+        {/* Zone 1: Brand Title (clicks back to Intro Gate) */}
         <a
           href="#top"
           onClick={(e) => {
             e.preventDefault();
-            setActiveTab('study');
+            setShowIntro(true);
           }}
           className="text-sm sm:text-lg font-bold tracking-tight text-slate-900 truncate"
+          title={isEs ? 'Volver a la pantalla de inicio' : '처음 언어 선택 화면으로 이동'}
         >
           {isEs
             ? 'Criterios del Centro de Misión'
@@ -168,7 +262,7 @@ export default function App() {
           </button>
           <button
             type="button"
-            onClick={() => setActiveTab('quiz')}
+            onClick={handleOpenQuizTab}
             className={`hover:text-slate-900 transition-colors whitespace-nowrap shrink-0 ${
               activeTab === 'quiz'
                 ? 'text-slate-900 font-semibold underline underline-offset-8 decoration-2 decoration-sky-700'
@@ -260,7 +354,13 @@ export default function App() {
               <button
                 key={tab.id}
                 type="button"
-                onClick={() => setActiveTab(tab.id as ActiveTab)}
+                onClick={() => {
+                  if (tab.id === 'quiz') {
+                    handleOpenQuizTab();
+                  } else {
+                    setActiveTab(tab.id as ActiveTab);
+                  }
+                }}
                 className={`p-2.5 sm:px-4 sm:py-2.5 rounded-lg text-left transition-all ${
                   isActive
                     ? 'bg-sky-700 text-white shadow-xs'
@@ -296,7 +396,7 @@ export default function App() {
                 onStartChapterQuiz={(ch) => {
                   setCustomQuestionPool(null);
                   setSelectedChapter(ch);
-                  setActiveTab('quiz');
+                  handleOpenQuizTab();
                 }}
               />
             )}
@@ -304,6 +404,7 @@ export default function App() {
             {activeTab === 'quiz' && (
               <QuizStage
                 lang={lang}
+                quizSessionKey={quizSessionKey}
                 selectedChapter={selectedChapter}
                 onChangeChapter={setSelectedChapter}
                 customQuestionPool={customQuestionPool}
@@ -327,7 +428,7 @@ export default function App() {
                 onStartChapterQuiz={(ch) => {
                   setCustomQuestionPool(null);
                   setSelectedChapter(ch);
-                  setActiveTab('quiz');
+                  handleOpenQuizTab();
                 }}
               />
             )}
@@ -341,6 +442,8 @@ export default function App() {
                 onToggleBookmark={handleToggleBookmark}
                 onStartRetryPool={(ids) => {
                   setCustomQuestionPool(ids);
+                  setSelectedChapter('all');
+                  setQuizSessionKey((prev) => prev + 1);
                   setActiveTab('quiz');
                 }}
                 onSelectClause={(clauseId) => setActiveClauseId(clauseId)}

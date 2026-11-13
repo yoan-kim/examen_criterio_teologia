@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Bookmark,
   CheckCircle2,
@@ -13,6 +13,7 @@ import {
   VolumeX,
   PartyPopper,
   Trophy,
+  Lock,
 } from 'lucide-react';
 import {
   ChapterId,
@@ -28,6 +29,7 @@ import { PassCelebrationModal } from './PassCelebrationModal';
 
 interface QuizStageProps {
   lang: Language;
+  quizSessionKey: number;
   selectedChapter: ChapterId | 'all';
   onChangeChapter: (ch: ChapterId | 'all') => void;
   customQuestionPool: number[] | null;
@@ -40,8 +42,21 @@ interface QuizStageProps {
   onSelectClause: (clauseId: string) => void;
 }
 
+/** Fisher-Yates random shuffle */
+function shuffleArray<T>(items: T[]): T[] {
+  const copy = [...items];
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const temp = copy[i];
+    copy[i] = copy[j];
+    copy[j] = temp;
+  }
+  return copy;
+}
+
 export const QuizStage: React.FC<QuizStageProps> = ({
   lang,
+  quizSessionKey,
   selectedChapter,
   onChangeChapter,
   customQuestionPool,
@@ -58,10 +73,13 @@ export const QuizStage: React.FC<QuizStageProps> = ({
   const [activeBlankSlot, setActiveBlankSlot] = useState<number>(0);
   const [isMuted, setIsMuted] = useState(false);
 
-  // Per-language, per-question user state
-  const [blankValues, setBlankValues] = useState<Record<string, string[]>>({});
-  const [oxSelection, setOxSelection] = useState<Record<string, boolean | null>>({});
-  const [multiSelection, setMultiSelection] = useState<Record<string, number[]>>({});
+  // Random shuffle order of question IDs for the current session
+  const [shuffledIds, setShuffledIds] = useState<number[]>([]);
+
+  // Per-question user state (unified across Korean & Spanish; locked upon submission)
+  const [blankValues, setBlankValues] = useState<Record<number, string[]>>({});
+  const [oxSelection, setOxSelection] = useState<Record<number, boolean | null>>({});
+  const [multiSelection, setMultiSelection] = useState<Record<number, number[]>>({});
   const [submittedMap, setSubmittedMap] = useState<Record<number, boolean>>({});
   const [correctnessMap, setCorrectnessMap] = useState<Record<number, boolean>>({});
 
@@ -77,30 +95,54 @@ export const QuizStage: React.FC<QuizStageProps> = ({
     soundEffects.muted = next;
   };
 
-  const filteredQuestions = useMemo(() => {
+  /**
+   * Base candidate IDs before shuffling:
+   * - In Beginner (초급), Intermediate (중급), and Advanced (고급), ALWAYS include all 20 questions
+   *   (1번~20번, 5점 × 20문항 = 100점 만점) without chapter truncation so the user solves 1~20 linearly.
+   * - Chapter filter only applies when examLevel === 'all' (49-question free practice mode).
+   */
+  const baseCandidateIds = useMemo(() => {
     if (customQuestionPool && customQuestionPool.length > 0) {
-      return questionsSource.filter((q) => customQuestionPool.includes(q.id));
+      return QUIZ_QUESTIONS.filter((q) => customQuestionPool.includes(q.id)).map(
+        (q) => q.id
+      );
     }
     if (examLevel !== 'all') {
-      const targetIds = LEVEL_QUESTION_IDS[examLevel];
-      const ordered = targetIds
-        .map((id) => questionsSource.find((q) => q.id === id))
-        .filter((q): q is QuizQuestion => !!q);
-      if (selectedChapter !== 'all') {
-        return ordered.filter((q) => q.chapterId === selectedChapter);
-      }
-      return ordered;
+      return [...LEVEL_QUESTION_IDS[examLevel]];
     }
-    if (selectedChapter !== 'all') {
-      return questionsSource.filter((q) => q.chapterId === selectedChapter);
-    }
-    return questionsSource;
-  }, [questionsSource, examLevel, selectedChapter, customQuestionPool]);
+    const list =
+      selectedChapter !== 'all'
+        ? QUIZ_QUESTIONS.filter((q) => q.chapterId === selectedChapter)
+        : QUIZ_QUESTIONS;
+    return list.map((q) => q.id);
+  }, [examLevel, selectedChapter, customQuestionPool]);
 
-  useEffect(() => {
+  // Reset all current answers and shuffle question order randomly
+  const resetAndRandomizeQuiz = useCallback((targetIds: number[]) => {
+    setShuffledIds(shuffleArray(targetIds));
+    setBlankValues({});
+    setOxSelection({});
+    setMultiSelection({});
+    setSubmittedMap({});
+    setCorrectnessMap({});
+    setCelebratedKeys({});
+    setCelebrationOpen(false);
     setCurrentIndex(0);
     setActiveBlankSlot(0);
-  }, [examLevel, selectedChapter, customQuestionPool]);
+  }, []);
+
+  // Whenever user enters QuizStage (quizSessionKey increments), switches language, or changes level/pool, randomize and reset!
+  useEffect(() => {
+    resetAndRandomizeQuiz(baseCandidateIds);
+  }, [quizSessionKey, lang, baseCandidateIds, resetAndRandomizeQuiz]);
+
+  // Map shuffledIds to the active language question objects
+  const filteredQuestions = useMemo(() => {
+    const idsToUse = shuffledIds.length > 0 ? shuffledIds : baseCandidateIds;
+    return idsToUse
+      .map((id) => questionsSource.find((q) => q.id === id))
+      .filter((q): q is QuizQuestion => !!q);
+  }, [shuffledIds, baseCandidateIds, questionsSource]);
 
   const currentQuestion: QuizQuestion | undefined = filteredQuestions[currentIndex];
 
@@ -111,12 +153,18 @@ export const QuizStage: React.FC<QuizStageProps> = ({
     }
   }, [currentQuestion?.id, lang]);
 
-  // Calculate current exam session score (100 points full score)
+  // Calculate current exam session score (100 points full score; 5 points per question in 20-question levels)
   const totalInPool = filteredQuestions.length;
+  const submittedInPool = filteredQuestions.filter((q) => submittedMap[q.id]).length;
   const correctInPool = filteredQuestions.filter((q) => correctnessMap[q.id]).length;
   const currentScore =
-    totalInPool > 0 ? Math.round((correctInPool / totalInPool) * 100) : 0;
-  const isPassed = totalInPool > 0 && currentScore >= passingScore;
+    totalInPool === 20
+      ? correctInPool * 5
+      : totalInPool > 0
+      ? Math.round((correctInPool / totalInPool) * 100)
+      : 0;
+  const isAllCompleted = totalInPool > 0 && submittedInPool === totalInPool;
+  const isPassed = isAllCompleted && currentScore >= passingScore;
 
   const triggerCelebrationNow = () => {
     soundEffects.playPassCelebration();
@@ -125,41 +173,14 @@ export const QuizStage: React.FC<QuizStageProps> = ({
 
   const handlePassingScoreClick = (target: 80 | 90 | 100) => {
     setPassingScore(target);
-    if (totalInPool > 0 && currentScore >= target) {
+    if (isAllCompleted && currentScore >= target) {
       soundEffects.playPassCelebration();
       setCelebrationOpen(true);
     }
   };
 
   const handleResetLevelExam = () => {
-    const nextSubmitted = { ...submittedMap };
-    const nextCorrect = { ...correctnessMap };
-    const nextBlanks = { ...blankValues };
-    const nextOx = { ...oxSelection };
-    const nextMulti = { ...multiSelection };
-
-    filteredQuestions.forEach((q) => {
-      delete nextSubmitted[q.id];
-      delete nextCorrect[q.id];
-      delete nextBlanks[`ko-${q.id}`];
-      delete nextBlanks[`es-${q.id}`];
-      delete nextOx[`ko-${q.id}`];
-      delete nextOx[`es-${q.id}`];
-      delete nextMulti[`ko-${q.id}`];
-      delete nextMulti[`es-${q.id}`];
-    });
-
-    setSubmittedMap(nextSubmitted);
-    setCorrectnessMap(nextCorrect);
-    setBlankValues(nextBlanks);
-    setOxSelection(nextOx);
-    setMultiSelection(nextMulti);
-    setCelebratedKeys((prev) => ({
-      ...prev,
-      [`${examLevel}-${passingScore}`]: false,
-    }));
-    setCurrentIndex(0);
-    setActiveBlankSlot(0);
+    resetAndRandomizeQuiz(baseCandidateIds);
   };
 
   if (!currentQuestion) {
@@ -185,16 +206,15 @@ export const QuizStage: React.FC<QuizStageProps> = ({
   }
 
   const qId = currentQuestion.id;
-  const stateKey = `${lang}-${qId}`;
   const isSubmitted = !!submittedMap[qId];
   const isCorrect = !!correctnessMap[qId];
   const isBookmarked = bookmarkedQuestionIds.includes(qId);
 
   const currentBlanks =
-    blankValues[stateKey] ||
+    blankValues[qId] ||
     (currentQuestion.blankAnswers ? currentQuestion.blankAnswers.map(() => '') : []);
-  const currentOx = oxSelection[stateKey] ?? null;
-  const currentMulti = multiSelection[stateKey] || [];
+  const currentOx = oxSelection[qId] ?? null;
+  const currentMulti = multiSelection[qId] || [];
 
   const normalizeAnswer = (str: string) =>
     str
@@ -209,7 +229,7 @@ export const QuizStage: React.FC<QuizStageProps> = ({
     if (isSubmitted) return;
     const next = [...currentBlanks];
     next[slotIdx] = val;
-    setBlankValues((prev) => ({ ...prev, [stateKey]: next }));
+    setBlankValues((prev) => ({ ...prev, [qId]: next }));
   };
 
   const handleWordChipClick = (word: string) => {
@@ -220,7 +240,7 @@ export const QuizStage: React.FC<QuizStageProps> = ({
 
     const next = [...currentBlanks];
     next[targetSlot] = word;
-    setBlankValues((prev) => ({ ...prev, [stateKey]: next }));
+    setBlankValues((prev) => ({ ...prev, [qId]: next }));
 
     const nextEmpty = next.findIndex((v, i) => i > targetSlot && !v.trim());
     if (nextEmpty !== -1) {
@@ -237,13 +257,16 @@ export const QuizStage: React.FC<QuizStageProps> = ({
       const next = exists
         ? currentMulti.filter((i) => i !== optIdx)
         : [...currentMulti, optIdx];
-      setMultiSelection((prev) => ({ ...prev, [stateKey]: next }));
+      setMultiSelection((prev) => ({ ...prev, [qId]: next }));
     } else {
-      setMultiSelection((prev) => ({ ...prev, [stateKey]: [optIdx] }));
+      setMultiSelection((prev) => ({ ...prev, [qId]: [optIdx] }));
     }
   };
 
   const evaluateQuestion = () => {
+    // Once submitted, re-evaluating or retrying a single question is blocked (anti-cheating)
+    if (isSubmitted) return;
+
     let pass = false;
     if (currentQuestion.type === 'blank' && currentQuestion.blankAnswers) {
       pass = currentQuestion.blankAnswers.every((acceptedList, idx) => {
@@ -260,49 +283,50 @@ export const QuizStage: React.FC<QuizStageProps> = ({
         expected.every((val, i) => val === actual[i]);
     }
 
+    const nextSubmittedMap = { ...submittedMap, [qId]: true };
     const nextCorrectMap = { ...correctnessMap, [qId]: pass };
-    setSubmittedMap((prev) => ({ ...prev, [qId]: true }));
+    setSubmittedMap(nextSubmittedMap);
     setCorrectnessMap(nextCorrectMap);
     onRecordResult(qId, pass);
     onSelectClause(currentQuestion.clauseId);
 
+    const newSubmittedCount = filteredQuestions.filter(
+      (q) => nextSubmittedMap[q.id]
+    ).length;
     const newCorrectCount = filteredQuestions.filter(
       (q) => nextCorrectMap[q.id]
     ).length;
     const newScore =
-      totalInPool > 0 ? Math.round((newCorrectCount / totalInPool) * 100) : 0;
+      totalInPool === 20
+        ? newCorrectCount * 5
+        : totalInPool > 0
+        ? Math.round((newCorrectCount / totalInPool) * 100)
+        : 0;
 
     if (pass) {
       soundEffects.playCorrectChime();
-
-      const celebKey = `${examLevel}-${passingScore}`;
-      if (newScore >= passingScore && !celebratedKeys[celebKey]) {
-        setCelebratedKeys((prev) => ({ ...prev, [celebKey]: true }));
-        setTimeout(() => {
-          soundEffects.playPassCelebration();
-          setCelebrationOpen(true);
-        }, 380);
-      }
     } else {
       soundEffects.playWrongTone();
     }
-  };
 
-  const handleRetryCurrent = () => {
-    setSubmittedMap((prev) => ({ ...prev, [qId]: false }));
-    setCorrectnessMap((prev) => ({ ...prev, [qId]: false }));
-    setBlankValues((prev) => ({
-      ...prev,
-      [stateKey]: currentQuestion.blankAnswers
-        ? currentQuestion.blankAnswers.map(() => '')
-        : [],
-    }));
-    setOxSelection((prev) => ({ ...prev, [stateKey]: null }));
-    setMultiSelection((prev) => ({ ...prev, [stateKey]: [] }));
-    setActiveBlankSlot(0);
+    // Trigger Pass Celebration ONLY after all 20 questions (totalInPool) are completed
+    const celebKey = `${examLevel}-${passingScore}`;
+    if (
+      totalInPool > 0 &&
+      newSubmittedCount === totalInPool &&
+      newScore >= passingScore &&
+      !celebratedKeys[celebKey]
+    ) {
+      setCelebratedKeys((prev) => ({ ...prev, [celebKey]: true }));
+      setTimeout(() => {
+        soundEffects.playPassCelebration();
+        setCelebrationOpen(true);
+      }, 380);
+    }
   };
 
   const canSubmit = () => {
+    if (isSubmitted) return false;
     if (currentQuestion.type === 'blank') {
       return currentBlanks.some((b) => b.trim().length > 0);
     }
@@ -342,26 +366,40 @@ export const QuizStage: React.FC<QuizStageProps> = ({
   const levelDescriptions: Record<ExamLevel, string> = isEs
     ? {
         beginner:
-          'Nivel Básico (20 preguntas · 5 pts c/u): 50% Opción Múltiple (10) + 50% O/X (10)',
+          'Nivel Básico (Pregunta 1 a 20 en línea recta · 5 pts c/u): 50% Opción Múltiple (10) + 50% O/X (10)',
         intermediate:
-          'Nivel Intermedio (20 preguntas · 5 pts c/u): 50% Espacios en blanco (10) + 25% Opción Múltiple (5) + 25% O/X (5)',
+          'Nivel Intermedio (Pregunta 1 a 20 en línea recta · 5 pts c/u): 50% Espacios en blanco (10) + 25% Opción Múltiple (5) + 25% O/X (5)',
         advanced:
-          'Nivel Avanzado (20 preguntas · 5 pts c/u): 100% Espacios en blanco del texto original (20)',
-        all: 'Banco Completo (49 preguntas): Practica todas las cláusulas del reglamento.',
+          'Nivel Avanzado (Pregunta 1 a 20 en línea recta · 5 pts c/u): 100% Espacios en blanco del texto original (20)',
+        all: 'Banco Completo (49 preguntas en orden aleatorio): Practica todas las cláusulas del reglamento.',
       }
     : {
         beginner:
-          '초급 과정 (총 20문항 · 문항당 5점): 4지선다형 50%(10문항) + O/X 퀴즈 50%(10문항)',
+          '초급 과정 (1번~20번 일직선 진행 · 문항당 5점): 4지선다형 50%(10문항) + O/X 퀴즈 50%(10문항)',
         intermediate:
-          '중급 과정 (총 20문항 · 문항당 5점): 빈칸 주관식 50%(10문항) + 4지선다형 25%(5문항) + O/X 퀴즈 25%(5문항)',
+          '중급 과정 (1번~20번 일직선 진행 · 문항당 5점): 빈칸 주관식 50%(10문항) + 4지선다형 25%(5문항) + O/X 퀴즈 25%(5문항)',
         advanced:
-          '고급 과정 (총 20문항 · 문항당 5점): 원문 빈칸 주관식 100%(20문항)',
-        all: '전체 문제 은행 (49문항): 모든 조항 문제를 빠짐없이 연습합니다.',
+          '고급 과정 (1번~20번 일직선 진행 · 문항당 5점): 원문 빈칸 주관식 100%(20문항)',
+        all: '전체 문제 은행 (49문항 랜덤 출제): 모든 조항 문제를 빠짐없이 연습합니다.',
+      };
+
+  const levelBadgeLabel: Record<ExamLevel, string> = isEs
+    ? {
+        beginner: 'NIVEL BÁSICO (1~20)',
+        intermediate: 'NIVEL INTERMEDIO (1~20)',
+        advanced: 'NIVEL AVANZADO (1~20)',
+        all: 'PRÁCTICA COMPLETA',
+      }
+    : {
+        beginner: '초급 시험 (1~20번)',
+        intermediate: '중급 시험 (1~20번)',
+        advanced: '고급 시험 (1~20번)',
+        all: '전체 연습 모드',
       };
 
   return (
     <div className="space-y-4 sm:space-y-5">
-      {/* Pass Celebration Modal (Fireworks + Applause) */}
+      {/* Pass Celebration Modal (Only after all 20 questions are completed; stays in current level) */}
       <PassCelebrationModal
         lang={lang}
         isOpen={celebrationOpen}
@@ -372,10 +410,6 @@ export const QuizStage: React.FC<QuizStageProps> = ({
         correctCount={correctInPool}
         totalCount={totalInPool}
         onRetryLevel={handleResetLevelExam}
-        onNextLevel={() => {
-          if (examLevel === 'beginner') setExamLevel('intermediate');
-          else if (examLevel === 'intermediate') setExamLevel('advanced');
-        }}
       />
 
       {/* Level & Passing Score Control Card */}
@@ -392,40 +426,58 @@ export const QuizStage: React.FC<QuizStageProps> = ({
               onClick={onClearCustomPool}
               className="px-3 py-1.5 text-xs font-medium text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors w-fit"
             >
-              {isEs ? 'Volver al examen por niveles' : '레벨별 시험 모드로 복귀'}
+              {isEs ? 'Volver al examen por niveles (20 preguntas)' : '레벨별 20문항 시험 모드로 복귀'}
             </button>
           </div>
         )}
 
-        {/* Row 1: Exam Level Selection (초급 / 중급 / 고급) */}
-        <div className="space-y-2">
-          <div className="flex items-center justify-between gap-2">
+        {/* Row 1: Exam Level Selection & [문제 초기화] + [정답 효과음 켜짐] */}
+        <div className="space-y-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <span className="text-xs font-bold text-slate-700">
               {isEs
-                ? '1. Seleccionar Nivel de Examen (Básico · Intermedio · Avanzado)'
-                : '1. 시험 레벨 선택 (초급 · 중급 · 고급)'}
+                ? '1. Seleccionar Nivel de Examen (Básico · Intermedio · Avanzado — 1 a 20 en orden)'
+                : '1. 시험 레벨 선택 (초급 · 중급 · 고급 — 각 레벨 1번~20번 일직선 진행)'}
             </span>
-            <button
-              type="button"
-              onClick={toggleMute}
-              className={`px-2.5 py-1 text-xs font-medium rounded-md border transition-colors flex items-center gap-1 ${
-                isMuted
-                  ? 'bg-slate-100 text-slate-500 border-slate-200'
-                  : 'bg-sky-50 text-sky-800 border-sky-200'
-              }`}
-            >
-              {isMuted ? (
-                <>
-                  <VolumeX className="w-3.5 h-3.5" />
-                  {isEs ? 'Sonido OFF' : '효과음 꺼짐'}
-                </>
-              ) : (
-                <>
-                  <Volume2 className="w-3.5 h-3.5" />
-                  {isEs ? 'Sonido ON' : '정답 효과음 켜짐'}
-                </>
-              )}
-            </button>
+
+            {/* Right Control Group: [문제 초기화] on the left of [정답 효과음 켜짐] */}
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={handleResetLevelExam}
+                className="px-2.5 py-1 text-xs font-semibold text-slate-700 bg-slate-100 border border-slate-200 rounded-md hover:bg-slate-200 transition-colors flex items-center gap-1 whitespace-nowrap shrink-0"
+                title={
+                  isEs
+                    ? 'Reiniciar puntaje y mezclar las 20 preguntas de este nivel al azar'
+                    : '현재 레벨의 20문항을 랜덤으로 다시 섞고 1번부터 새로 시작합니다'
+                }
+              >
+                <RotateCcw className="w-3.5 h-3.5 text-slate-600" />
+                {isEs ? 'Reiniciar preguntas' : '문제 초기화'}
+              </button>
+
+              <button
+                type="button"
+                onClick={toggleMute}
+                className={`px-2.5 py-1 text-xs font-medium rounded-md border transition-colors flex items-center gap-1 whitespace-nowrap shrink-0 ${
+                  isMuted
+                    ? 'bg-slate-100 text-slate-500 border-slate-200'
+                    : 'bg-sky-50 text-sky-800 border-sky-200'
+                }`}
+              >
+                {isMuted ? (
+                  <>
+                    <VolumeX className="w-3.5 h-3.5" />
+                    {isEs ? 'Sonido OFF' : '효과음 꺼짐'}
+                  </>
+                ) : (
+                  <>
+                    <Volume2 className="w-3.5 h-3.5" />
+                    {isEs ? 'Sonido ON' : '정답 효과음 켜짐'}
+                  </>
+                )}
+              </button>
+            </div>
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
@@ -459,7 +511,11 @@ export const QuizStage: React.FC<QuizStageProps> = ({
                   onClick={() => {
                     onClearCustomPool();
                     onChangeChapter('all');
-                    setExamLevel(lvl.id as ExamLevel);
+                    if (examLevel === lvl.id) {
+                      handleResetLevelExam();
+                    } else {
+                      setExamLevel(lvl.id as ExamLevel);
+                    }
                   }}
                   className={`p-2.5 rounded-xl border text-left transition-all ${
                     active
@@ -489,8 +545,8 @@ export const QuizStage: React.FC<QuizStageProps> = ({
           <div className="sm:col-span-6 space-y-1.5">
             <div className="text-xs font-bold text-slate-700">
               {isEs
-                ? '2. Meta de Aprobación (80 / 90 / 100 pts — Celebración al aprobar)'
-                : '2. 합격 기준 점수 설정 (달성 시 폭죽·박수 축하 모션)'}
+                ? '2. Meta de Aprobación (80 / 90 / 100 pts — Se evalúa al completar las 20 preguntas)'
+                : '2. 합격 기준 점수 설정 (20문항 모두 완주 시 폭죽·박수 축하 모션)'}
             </div>
             <div className="grid grid-cols-3 gap-2">
               {([80, 90, 100] as const).map((pt) => {
@@ -521,7 +577,7 @@ export const QuizStage: React.FC<QuizStageProps> = ({
             </div>
           </div>
 
-          {/* Live Score & Celebration Trigger */}
+          {/* Live Score & Progress Bar */}
           <div className="sm:col-span-6 p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
             <div className="flex items-center justify-between gap-2">
               <div className="text-xs text-slate-600">
@@ -531,8 +587,9 @@ export const QuizStage: React.FC<QuizStageProps> = ({
                   {isEs ? ' pts' : '점'}
                 </span>{' '}
                 <span className="text-slate-500 font-mono-num">
-                  ({correctInPool}/{totalInPool}{' '}
-                  {isEs ? `aciertos · Meta ${passingScore}` : `정답 · 목표 ${passingScore}점`})
+                  ({ isEs
+                    ? `Respondidas ${submittedInPool}/${totalInPool} · Aciertos ${correctInPool}`
+                    : `진행 ${submittedInPool}/${totalInPool}문항 · 정답 ${correctInPool}개`})
                 </span>
               </div>
 
@@ -551,7 +608,7 @@ export const QuizStage: React.FC<QuizStageProps> = ({
                   onClick={handleResetLevelExam}
                   className="px-2 py-1 text-xs text-slate-600 hover:text-slate-900 underline shrink-0"
                 >
-                  {isEs ? 'Reiniciar' : '점수 초기화'}
+                  {isEs ? 'Reiniciar' : '문제 초기화'}
                 </button>
               )}
             </div>
@@ -568,43 +625,56 @@ export const QuizStage: React.FC<QuizStageProps> = ({
           </div>
         </div>
 
-        {/* Row 3: Optional Chapter Filter & Question Number Strip */}
+        {/* Row 3: Question 1~20 Linear Number Strip (Chapter filter only shown in 'all' 49-question practice mode) */}
         <div className="pt-3 border-t border-slate-100 space-y-2.5">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex flex-wrap items-center gap-1">
-              {(isEs
-                ? [
-                    { id: 'all', label: 'Todo' },
-                    { id: '1', label: '1. Apertura' },
-                    { id: '2', label: '2. Inscripción' },
-                    { id: '3', label: '3. Fin de semestre' },
-                  ]
-                : [
-                    { id: 'all', label: '전체 장' },
-                    { id: '1', label: '1. 개강 기준' },
-                    { id: '2', label: '2. 등록 기준' },
-                    { id: '3', label: '3. 종강 기준' },
-                  ]
-              ).map((ch) => (
-                <button
-                  key={ch.id}
-                  type="button"
-                  onClick={() => {
-                    onClearCustomPool();
-                    onChangeChapter(ch.id as ChapterId | 'all');
-                  }}
-                  className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
-                    !customQuestionPool && selectedChapter === ch.id
-                      ? 'bg-slate-900 text-white'
-                      : 'bg-slate-100 text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  {ch.label}
-                </button>
-              ))}
-            </div>
+            {examLevel === 'all' && !customQuestionPool ? (
+              <div className="flex flex-wrap items-center gap-1">
+                {(isEs
+                  ? [
+                      { id: 'all', label: 'Todo (49)' },
+                      { id: '1', label: '1. Apertura' },
+                      { id: '2', label: '2. Inscripción' },
+                      { id: '3', label: '3. Fin de semestre' },
+                    ]
+                  : [
+                      { id: 'all', label: '전체 장 (49)' },
+                      { id: '1', label: '1. 개강 기준' },
+                      { id: '2', label: '2. 등록 기준' },
+                      { id: '3', label: '3. 종강 기준' },
+                    ]
+                ).map((ch) => (
+                  <button
+                    key={ch.id}
+                    type="button"
+                    onClick={() => {
+                      onClearCustomPool();
+                      onChangeChapter(ch.id as ChapterId | 'all');
+                    }}
+                    className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
+                      selectedChapter === ch.id
+                        ? 'bg-slate-900 text-white'
+                        : 'bg-slate-100 text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    {ch.label}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 text-xs font-semibold text-slate-700">
+                <span className="px-2 py-0.5 rounded bg-slate-900 text-white font-mono-num">
+                  {levelBadgeLabel[examLevel]}
+                </span>
+                <span className="text-slate-500">
+                  {isEs
+                    ? '1 a 20 en línea recta (sin cambio automático de nivel)'
+                    : '1번부터 20번까지 현재 레벨 안에서 일직선 진행'}
+                </span>
+              </div>
+            )}
 
-            <span className="text-xs font-mono-num text-slate-500">
+            <span className="text-xs font-mono-num font-semibold text-slate-600">
               {isEs
                 ? `Pregunta ${currentIndex + 1} de ${filteredQuestions.length}`
                 : `${currentIndex + 1} / ${filteredQuestions.length}번째 문제`}
@@ -646,6 +716,9 @@ export const QuizStage: React.FC<QuizStageProps> = ({
         <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 pb-4 border-b border-slate-200">
           <div className="space-y-1.5 min-w-0">
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500">
+              <span className="px-2 py-0.5 rounded bg-sky-50 text-sky-800 border border-sky-200 font-mono-num font-bold">
+                {levelBadgeLabel[examLevel]}
+              </span>
               <span className="font-mono-num font-bold text-slate-900">
                 {isEs
                   ? `Pregunta ${currentIndex + 1} / ${filteredQuestions.length}`
@@ -771,7 +844,7 @@ export const QuizStage: React.FC<QuizStageProps> = ({
               })}
             </div>
 
-            {/* Word Bank Chips */}
+            {/* Word Bank Chips (Only before submission) */}
             {blankInputMode === 'hybrid' && currentQuestion.wordBank && !isSubmitted && (
               <div className="p-3.5 sm:p-4 bg-white border border-slate-200 rounded-xl space-y-2.5">
                 <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
@@ -789,14 +862,14 @@ export const QuizStage: React.FC<QuizStageProps> = ({
                     onClick={() =>
                       setBlankValues((prev) => ({
                         ...prev,
-                        [stateKey]: currentQuestion.blankAnswers
+                        [qId]: currentQuestion.blankAnswers
                           ? currentQuestion.blankAnswers.map(() => '')
                           : [],
                       }))
                     }
                     className="text-slate-600 hover:text-slate-900 underline shrink-0"
                   >
-                    {isEs ? 'Limpiar' : '입력 초기화'}
+                    {isEs ? 'Limpiar' : '입력 지우기'}
                   </button>
                 </div>
                 <div className="flex flex-wrap gap-2">
@@ -851,9 +924,10 @@ export const QuizStage: React.FC<QuizStageProps> = ({
                     key={String(item.val)}
                     type="button"
                     disabled={isSubmitted}
-                    onClick={() =>
-                      setOxSelection((prev) => ({ ...prev, [stateKey]: item.val }))
-                    }
+                    onClick={() => {
+                      if (isSubmitted) return;
+                      setOxSelection((prev) => ({ ...prev, [qId]: item.val }));
+                    }}
                     className={`p-4 rounded-xl border text-left transition-all flex items-center justify-between gap-2 ${
                       isSubmitted
                         ? item.val === currentQuestion.oxAnswer
@@ -1012,7 +1086,7 @@ export const QuizStage: React.FC<QuizStageProps> = ({
           </div>
         )}
 
-        {/* Bottom Action Controls */}
+        {/* Bottom Action Controls (No per-question retry to prevent cheating; linear 1~20 progression) */}
         <div className="pt-4 border-t border-slate-200 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <button
@@ -1040,21 +1114,29 @@ export const QuizStage: React.FC<QuizStageProps> = ({
           <div className="flex items-center gap-2">
             {isSubmitted ? (
               <>
-                <button
-                  type="button"
-                  onClick={handleRetryCurrent}
-                  className="flex-1 sm:flex-initial justify-center px-4 py-2.5 text-xs font-medium text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors flex items-center gap-1.5"
-                >
-                  <RotateCcw className="w-3.5 h-3.5" />
-                  {isEs ? 'Reintentar' : '다시 풀기'}
-                </button>
-                {currentIndex < filteredQuestions.length - 1 && (
+                <span className="px-3 py-2 text-xs font-medium text-slate-500 bg-slate-100 rounded-lg flex items-center gap-1.5 shrink-0">
+                  <Lock className="w-3.5 h-3.5 text-slate-400" />
+                  {isEs ? 'Calificado (Sin reintento individual)' : '채점 확정 (개별 재풀이 불가)'}
+                </span>
+
+                {currentIndex < filteredQuestions.length - 1 ? (
                   <button
                     type="button"
                     onClick={() => setCurrentIndex((i) => i + 1)}
                     className="flex-1 sm:flex-initial justify-center px-4 py-2.5 text-xs font-semibold text-white bg-slate-900 rounded-lg hover:bg-slate-800 transition-colors"
                   >
-                    {isEs ? 'Siguiente pregunta →' : '다음 문제로 이동 →'}
+                    {isEs
+                      ? `Siguiente (${currentIndex + 2}/${filteredQuestions.length}) →`
+                      : `다음 문제로 이동 (${currentIndex + 2}/${filteredQuestions.length}) →`}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleResetLevelExam}
+                    className="flex-1 sm:flex-initial justify-center px-4 py-2.5 text-xs font-semibold text-white bg-sky-700 rounded-lg hover:bg-sky-800 transition-colors flex items-center gap-1.5"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    {isEs ? 'Reiniciar las 20 preguntas' : '20문항 전체 초기화 (다시 응시)'}
                   </button>
                 )}
               </>

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Award, PartyPopper, RotateCcw, ArrowRight, X } from 'lucide-react';
+import { Award, PartyPopper, RotateCcw, X } from 'lucide-react';
 import { ExamLevel } from '../data/regulationData';
 import { Language } from '../data/i18n';
 
@@ -12,7 +12,6 @@ interface PassCelebrationModalProps {
   passingScore: 80 | 90 | 100;
   correctCount: number;
   totalCount: number;
-  onNextLevel: () => void;
   onRetryLevel: () => void;
 }
 
@@ -37,7 +36,6 @@ export const PassCelebrationModal: React.FC<PassCelebrationModalProps> = ({
   passingScore,
   correctCount,
   totalCount,
-  onNextLevel,
   onRetryLevel,
 }) => {
   const [particles, setParticles] = useState<FireworkParticle[]>([]);
@@ -73,30 +71,17 @@ export const PassCelebrationModal: React.FC<PassCelebrationModalProps> = ({
 
   const levelNameMap: Record<ExamLevel, string> = isEs
     ? {
-        beginner: 'Nivel Básico (50% Opción Múltiple · 50% O/X)',
-        intermediate: 'Nivel Intermedio (50% Espacios · 25% Opción Múltiple · 25% O/X)',
-        advanced: 'Nivel Avanzado (100% Espacios en Blanco)',
-        all: 'Curso Completo (49 Preguntas)',
+        beginner: 'Nivel Básico (20 preguntas · 50% Opción Múltiple · 50% O/X)',
+        intermediate:
+          'Nivel Intermedio (20 preguntas · 50% Espacios · 25% Opción Múltiple · 25% O/X)',
+        advanced: 'Nivel Avanzado (20 preguntas · 100% Espacios en Blanco)',
+        all: 'Práctica Completa (49 Preguntas)',
       }
     : {
-        beginner: '초급 과정 (4지선다 50% · O/X 50%)',
-        intermediate: '중급 과정 (빈칸 50% · 4지선다 25% · O/X 25%)',
-        advanced: '고급 과정 (빈칸 주관식 100%)',
+        beginner: '초급 과정 (20문항 완주 · 4지선다 50% · O/X 50%)',
+        intermediate: '중급 과정 (20문항 완주 · 빈칸 50% · 4지선다 25% · O/X 25%)',
+        advanced: '고급 과정 (20문항 완주 · 빈칸 주관식 100%)',
         all: '전체 49문항 마스터 과정',
-      };
-
-  const nextLevelLabel: Record<ExamLevel, string | null> = isEs
-    ? {
-        beginner: 'Pasar al Nivel Intermedio →',
-        intermediate: 'Pasar al Nivel Avanzado →',
-        advanced: null,
-        all: null,
-      }
-    : {
-        beginner: '중급 과정 도전하기 →',
-        intermediate: '고급 과정 도전하기 →',
-        advanced: null,
-        all: null,
       };
 
   return (
@@ -217,11 +202,11 @@ export const PassCelebrationModal: React.FC<PassCelebrationModalProps> = ({
 
         <p className="text-xs text-slate-500 leading-relaxed break-keep">
           {isEs
-            ? 'Has dominado con exactitud los «Criterios de apertura, inscripción y finalización del curso del Centro de Misión (en el extranjero)».'
-            : '「선교센터 개강, 등록, 종강 기준(해외)」의 핵심 수치와 행정 절차를 정확하게 숙지하셨습니다.'}
+            ? 'Has completado las 20 preguntas de este nivel y dominado con exactitud los «Criterios de apertura, inscripción y finalización del curso del Centro de Misión (en el extranjero)».'
+            : '현재 레벨의 20문항을 모두 완주하여 「선교센터 개강, 등록, 종강 기준(해외)」의 핵심 수치와 행정 절차를 정확하게 숙지하셨습니다.'}
         </p>
 
-        {/* Actions */}
+        {/* Actions: Stay on current level (Reset & retry or Review answers) */}
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 pt-2">
           <button
             type="button"
@@ -232,30 +217,16 @@ export const PassCelebrationModal: React.FC<PassCelebrationModalProps> = ({
             className="flex-1 px-4 py-2.5 text-xs sm:text-sm font-medium text-slate-700 bg-slate-100 rounded-xl hover:bg-slate-200 transition-colors flex items-center justify-center gap-1.5"
           >
             <RotateCcw className="w-4 h-4" />
-            {isEs ? 'Repetir este nivel' : '현재 레벨 다시 풀기'}
+            {isEs ? 'Reiniciar este nivel' : '이 레벨 처음부터 다시 풀기'}
           </button>
 
-          {nextLevelLabel[level] ? (
-            <button
-              type="button"
-              onClick={() => {
-                onClose();
-                onNextLevel();
-              }}
-              className="flex-1 px-4 py-2.5 text-xs sm:text-sm font-semibold text-white bg-sky-700 rounded-xl hover:bg-sky-800 transition-colors flex items-center justify-center gap-1.5"
-            >
-              {nextLevelLabel[level]}
-              <ArrowRight className="w-4 h-4" />
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={onClose}
-              className="flex-1 px-4 py-2.5 text-xs sm:text-sm font-semibold text-white bg-slate-900 rounded-xl hover:bg-slate-800 transition-colors"
-            >
-              {isEs ? 'Seguir revisando' : '계속 문제 확인하기'}
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex-1 px-4 py-2.5 text-xs sm:text-sm font-semibold text-white bg-slate-900 rounded-xl hover:bg-slate-800 transition-colors"
+          >
+            {isEs ? 'Cerrar y revisar respuestas' : '닫기 (풀이 결과 확인)'}
+          </button>
         </div>
       </div>
     </div>

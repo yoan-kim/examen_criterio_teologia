@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
@@ -18,9 +18,6 @@ concurrency:
 
 jobs:
   build-and-deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -37,19 +34,35 @@ jobs:
       - name: Build static site with Vite
         run: npm run build
 
-      - name: Ensure .nojekyll and 404.html fallback exist in dist
+      - name: Prepare dist for GitHub Pages (.nojekyll & 404.html)
         run: |
+          rm -rf dist/assets/aistudio
           touch dist/.nojekyll
           cp dist/index.html dist/404.html
 
-      - name: Setup GitHub Pages
+      - name: Deploy to gh-pages branch
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./dist
+          force_orphan: true
+
+      - name: Setup GitHub Pages (Actions mode)
+        id: pages_config
+        continue-on-error: true
         uses: actions/configure-pages@v5
+        with:
+          enablement: true
 
       - name: Upload Pages artifact
+        if: steps.pages_config.outcome == 'success'
+        continue-on-error: true
         uses: actions/upload-pages-artifact@v3
         with:
           path: './dist'
 
-      - name: Deploy to GitHub Pages
+      - name: Deploy to GitHub Pages (Actions mode)
+        if: steps.pages_config.outcome == 'success'
+        continue-on-error: true
         id: deployment
         uses: actions/deploy-pages@v4
